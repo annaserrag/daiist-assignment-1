@@ -404,6 +404,7 @@ print(pd.DataFrame({
 # validation; the test set stays untouched until the final comparison.
 print(f"\n{LINE}\n4.2 Date features: with vs without (validation)\n{LINE}")
 k_val = int(round(TOP_SHARE * is_val.sum()))
+variant_scores = {}
 print(f"{'variant':<22}{'features':>9}{'val ROC-AUC':>13}{'val P@5%':>10}")
 for label, columns in (("without date features", FEATURES_NO_DATES),
                        ("with date features", FEATURES_ALL)):
@@ -411,11 +412,44 @@ for label, columns in (("without date features", FEATURES_NO_DATES),
     probe = LogisticRegression(max_iter=5000).fit(
         scaler.transform(features.loc[is_train, columns]), y[is_train])
     val_scores = probe.predict_proba(scaler.transform(features.loc[is_val, columns]))[:, 1]
+    variant_scores[label] = val_scores
     top = np.argsort(-val_scores)[:k_val]
     print(f"{label:<22}{len(columns):>9}{roc_auc_score(y[is_val], val_scores):>13.3f}"
           f"{y[is_val][top].mean():>10.3f}")
 print(f"\nvalidation base rate {y[is_val].mean():.1%}; the top 5% is {k_val} companies,"
       f" so one extra hit moves P@5% by {1 / k_val:.3f}")
+
+# %% 4.3 Pick the feature set for the three final models. A small gain on 1,770
+# validation companies can be noise, so measure it: resample the validation set with
+# replacement 1,000 times and recompute the ROC-AUC gain each time (a paired
+# bootstrap: both variants are scored on the same resampled companies). The date
+# features are kept only if the whole 95% interval of the gain is above zero;
+# otherwise the safer set wins, because they also carry the leakage risk from 1.9.
+print(f"\n{LINE}\n4.3 Choosing the feature set for the final models\n{LINE}")
+rng = np.random.default_rng(0)
+y_val = y[is_val]
+gains = []
+for _ in range(1000):
+    sample = rng.integers(0, len(y_val), len(y_val))
+    if y_val[sample].min() == y_val[sample].max():
+        continue  # a resample with a single class has no ROC-AUC
+    gains.append(roc_auc_score(y_val[sample], variant_scores["with date features"][sample])
+                 - roc_auc_score(y_val[sample], variant_scores["without date features"][sample]))
+gain_low, gain_high = np.percentile(gains, [2.5, 97.5])
+observed_gain = (roc_auc_score(y_val, variant_scores["with date features"])
+                 - roc_auc_score(y_val, variant_scores["without date features"]))
+print(f"ROC-AUC gain from the date features: {observed_gain:+.3f}"
+      f" (95% bootstrap interval {gain_low:+.3f} to {gain_high:+.3f})")
+
+if gain_low > 0:
+    FINAL_FEATURES = FEATURES_ALL
+    print("-> the gain is clearly above noise: the final models use the date features.")
+else:
+    FINAL_FEATURES = FEATURES_NO_DATES
+    print("-> the interval includes zero: the gain is indistinguishable from noise, and")
+    print("   the date features carry a leakage risk (1.9). The final models use the")
+    print("   set without them.")
+print(f"final feature set: {len(FINAL_FEATURES)} features")
 
 # Next: train the same logistic regression three ways (scikit-learn, manual PyTorch
 # loop, nn.Module + torch.optim), compare against a naive baseline, and save
