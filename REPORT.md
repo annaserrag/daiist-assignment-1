@@ -11,11 +11,11 @@ can actually explain.*
 
 ## Dataset
 
-My dataset is [StartUp Investments (Crunchbase)](https://www.kaggle.com/datasets/arindam235/startup-investments-crunchbase/data) from Kaggle. It is a 2014 snapshot of venture-backed companies scraped from Crunchbase and it has 54k rows and 39 columns, where each row represents one startup.
+My dataset is [StartUp Investments (Crunchbase)](https://www.kaggle.com/datasets/arindam235/startup-investments-crunchbase/data) from Kaggle. It is a 2014 snapshot and an export of Crunchbase data on venture-backed companies. The file has 54,294 lines and 39 columns, of which 4,856 are completely empty, so there are **49,438 startups**; each non-empty row is one company. Restricting to founding years 2000–2008 (the modeling cohort below) leaves **12,214** companies.
 
-It's columns cover identity and location (`name`, `market`, `country_code`, …), founding and funding dates (`founded_year`, `first_funding_at`, `last_funding_at`), amounts by round type (`seed`, `venture`, `round_A`–`round_H`, `funding_total_usd`, …), and a categorical `status` (`acquired` / `operating` / `closed`).
+Its columns cover identity and location (`name`, `market`, `country_code`, …), founding and funding dates (`founded_year`, `first_funding_at`, `last_funding_at`), amounts by round type (`seed`, `venture`, `round_A`–`round_H`, `funding_total_usd`, …), and a categorical `status` (`acquired` / `operating` / `closed`).
 
-I picked it because the business question, which is who is likely to be acquired, maps cleanly onto `status`, and because the columns leave room for non-trivial feature engineering, and founding/funding dates force a time-aware split instead of a lazy random one. The raw file is large for the assignment’s “commit and retrain” guide, so the modeling cohort is restricted, rather than shipping every row.
+I picked it because the business question — who is likely to be acquired — maps cleanly onto `status`, the funding columns leave room for non-trivial feature engineering, and founding/funding dates make a time-aware split the natural choice. The raw file is large for the assignment’s “commit and retrain” guide, so the modeling cohort is restricted rather than shipping every row.
 
 ## Business / real-life framing
 
@@ -23,22 +23,26 @@ This is an M&A advisory boutique with limited banker time that has to decide whi
 
 My target is the status variable, where `acquired = 1`, and `operating` or `closed = 0`. There is no acquisition date, so a “acquired within X years” label cannot be defined — only the 2014 status snapshot. Raw acquisition rates also collapse with youth (about 22% for 1999 founders vs 0.6% for 2013) because younger companies simply have not had time to exit. To make the label usable I kept companies founded from 2000 to 2008 (at least six years of exposure by the snapshot) and I added `company_age` as an exposure control so the model does not treat “young” as “never acquired.”
 
-For the split, I will train on the founding cohorts of 2000–2005, I will validate with those of 2006, and I will test with 2007–2008. Scoring newer startups from what happened to older ones matches how the boutique would actually use the model. A random split would mix cohorts, let the model see companies founded later than those it is meant to rank, and hide the real drift in acquisition rates across the split (~16% → ~13.6% → ~9.7%). The time split surfaces that honestly. And with that I am accepting some trade-offs, like the test cohorts have had less calendar time (probabilities will run high), test ages (6–7) sit outside the training age range (9–14), and funding totals may include rounds raised after an acquisition.
+For the split, I will train on the founding cohorts of 2000–2005, validate on 2006, and test on 2007–2008 (~4,598 startups). Scoring newer startups from what happened to older ones matches how the boutique would actually use the model. A random split would mix cohorts, let the model see companies founded later than those it is meant to rank, and hide the real drift in acquisition rates across the split (~16% → ~13.6% → ~9.7%). The time split surfaces that honestly. Trade-offs I accept: test cohorts have had less calendar time (predicted probabilities will run high), test ages (6–7) sit outside the training age range (9–14), and funding totals may include rounds raised after an acquisition.
 
-I estimated the costs of the thresholds to be the following:
-
-
-| Error          | What happens                                                | Illustrative cost                                                                                                                                  |
-| -------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| False positive | Pitch a company that is never acquired                      | €3,000 roughly a day of associate research + deck prep                                                                                             |
-| False negative | Miss a company that does get acquired (without our mandate) | €150,000 a modest sell-side success fee (on the order of 1–2% of a ~€10M deal; real boutique fees often sit in this ballpark for smaller VC exits) |
+I estimated the costs of errors as follows:
 
 
-Y ≫ X (~50×), so missing a true acquirer hurts far more than wasting a pitch. That pushes the operating point toward higher recall (accept more FPs to catch more acquirers). The firm also has a hard capacity constraint, say ~200 pitches per year, so the practical rule is not an arbitrary probability cutoff but pitch the top-k scores (k ≈ annual capacity). The dashboard metric I optimize is therefore expected business cost at a chosen threshold / top-k:
+| Error          | What happens                                                | Illustrative cost |
+| -------------- | ----------------------------------------------------------- | ----------------- |
+| False positive | Pitch a company that is never acquired                      | **€3,000** — roughly a day of associate research + deck prep |
+| False negative | Miss a company that does get acquired (without our mandate) | **€37,500** expected — a €150,000 sell-side success fee (about 1–2% of a ~€10M deal) × a **25% win-rate** assumption. Missing an acquirer only costs the fee if we would have pitched *and* won; not every seller hires an adviser, and we would not win every pitch. |
 
-`cost = (# FP) × €3,000 + (# FN) × €150,000`
 
-with the default threshold set so that the selected set size matches capacity while that cost (and recall among true acquirers) stays acceptable. Precision in the top-k is the companion view: of the 200 we can afford to pitch, how many are real acquirers?
+FN cost ≫ FP cost (~12.5×), so on pure expected-cost grounds we would want high recall. The unconstrained cost-minimising probability threshold is about `FP / (FP + FN) ≈ 3,000 / 40,500 ≈ 0.07`, which would mean pitching almost every startup — far beyond what a small boutique can do. **Capacity is therefore the binding constraint; the euro costs score each choice of *k*, they do not set *k*.**
+
+In production the firm can pitch on the order of **~200 companies a year**. The test set is two founding cohorts (~4,598 startups), not one year of deal flow, so I translate that capacity into a **fixed share: the top 5%** of scores on whatever set is being ranked (~230 names on the test set; about 200 on a 4,000-company annual list). The operating rule is **pitch the top-*k***, not an absolute probability cutoff. That choice also addresses the calibration problem named above: because test probabilities run high from shorter exposure, a fixed probability threshold would be misleading, whereas top-*k* depends only on ranking and is unaffected by that level shift.
+
+The dashboard metric is expected business cost over the ranked list at a chosen *k* (default *k* = top 5%):
+
+`cost = (# FP among pitched) × €3,000 + (# FN among not pitched) × €37,500`
+
+Precision@*k* is the companion view: of the names we can afford to pitch, how many are real acquirers?
 
 ## Data preparation & feature engineering
 
