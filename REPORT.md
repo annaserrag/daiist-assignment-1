@@ -54,15 +54,31 @@ Dataset-level findings (raw structure, acquisition rate by founding year that ju
 
 **Funding features.** A missing `funding_total_usd` always came with zeros in every round column and a lower acquisition rate, so missing means “nothing disclosed,” not a random hole: I kept those rows, added a `funding_disclosed` flag, and filled the total with 0. Amounts span orders of magnitude with heavy right skew, so size enters as `log1p` of total, seed, angel, venture, and debt. Mix is `share_venture`, `share_debt_financing`, and `share_seed` of typed funding. Lettered rounds are only partly nested (about **61%** of companies with a C also had a B), so I do not treat them as eight independent dummies: `max_round` (A=1 … H=8, else 0) summarises progress in one ordered number. I also keep flags for seed/angel/venture/debt/grant, a count of distinct round types, and `funding_rounds`. Early pace is years from founding to first funding (negatives clipped to 0 — data-entry or pre-incorporation money — rather than dropping the company) and `log_funding_per_round`. **Post-IPO equity/debt are excluded from every funding feature:** that money only exists after an IPO, which is itself an exit.
 
-**Sector and geography.** Hundreds of sparse `market` values cannot be one-hot encoded, so I hand-mapped the common markets into nine fixed sectors (`software_it`, `health_life_sciences`, …); everything else, including missing, is `other` (reference level, no column). For geography: `is_usa`, one column each for the five largest non-US countries **chosen on the training rows only** (GBR, CHN, CAN, FRA, ISR), `is_hub` for SF Bay Area / Boston / New York City / London, and `n_categories` from `category_list`. I dropped `state_code` (~⅓ missing). Which of funding vs sector/geo actually moves the score is left to the fitted coefficients in the modeling section (exploration alone already shows `is_hub` is a strong univariate separator).
+**Sector and geography.** Hundreds of sparse `market` values cannot be one-hot encoded, so I hand-mapped the common markets into nine fixed sectors (`software_it`, `health_life_sciences`, …); everything else, including missing, is `other` (reference level, no column). For geography: `is_usa`, one column each for the five largest non-US countries **chosen on the training rows only** (GBR, CHN, CAN, FRA, ISR), `is_hub` for SF Bay Area / Boston / New York City / London, and `n_categories` from `category_list`. I dropped `state_code` (~⅓ missing). Exploration already shows `is_hub` as a strong univariate separator; how funding vs sector/geo share the fitted score is discussed with the coefficients below.
 
 **Date features and the final set.** I also built `funding_span_years` and `rounds_per_year`, but they can leak if acquired companies stop raising after the deal (plausible from exploration, not proven by a shorter span alone). On validation, adding them lifted ROC-AUC by only **+0.006**. A paired bootstrap (1,000 redraws of the validation set) put the 95% interval of that gain at **[−0.005, +0.017]**, which includes zero — indistinguishable from noise. Rule in code: keep the date features only if the whole interval sits above zero; otherwise prefer the safer set. **The three final models therefore use the 37 features without the date features.**
+
 ## Modeling: three implementations, one model
 
-*Which model (linear or logistic regression) and why. A results table
-comparing scikit-learn, the manual PyTorch loop, and the standard
-torch.nn.Module/torch.optim workflow, on the same test set, against the
-naive baseline. Do the three agree? If not, why not?*
+The target is binary, so the model is **logistic regression**. Features are standardised with a `StandardScaler` **fitted on the training rows only**, then applied to validation and test — needed so gradient descent sees log-funding (~14) and 0/1 flags on a common scale.
+
+I train the **same** model three ways on that matrix: scikit-learn, a from-scratch PyTorch loop (raw tensors, autograd, manual update), and `torch.nn.Linear` + `BCEWithLogitsLoss` + `torch.optim.SGD`. Comparability is enforced, not assumed: the same 37 features and cohort split; the same L2 penalty mapped from sklearn’s `C` as `λ = 1/(C·n_train)` with the bias unpenalised; `float64` throughout; both PyTorch runs start at zero weights. The only hyperparameters touched are `C` (validation ROC-AUC) and the learning rate (short training-loss trial). Chosen values: **C = 10**, **lr = 1.0**. `C` barely matters here — validation ROC-AUC is **0.7610** at `C = 1` vs **0.7618** at `C = 10` — so regularisation strength is not an important lever on this problem.
+
+**Test results** (4,598 startups founded 2007–2008; top 5% = 230 pitches; cost = FP × €3,000 + FN × €37,500):
+
+| Model | ROC-AUC | Precision@5% | Acquirers pitched | Cost |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline: base rate (random ranking) | 0.500 | 9.7% | 22 | €16.55M |
+| Baseline: rank by total funding | 0.579 | 9.1% | 21 | €16.60M |
+| scikit-learn | 0.718 | 27.8% | 64 | €14.86M |
+| PyTorch (manual loop) | 0.718 | 27.8% | 64 | €14.86M |
+| PyTorch (nn + optim) | 0.718 | 27.8% | 64 | €14.86M |
+
+The model’s pitch list hits acquirers about **2.9×** as often as random. Ranking by funding alone is no better than random on precision@5%. Most of the euro cost is the **383 acquirers left outside the top 230** — capacity binds, as the framing says, so the models mainly rearrange who fills the fixed pitch slots.
+
+**Do the three agree?** After a first run they did not: the two PyTorch versions matched each other, but some weights were up to ~0.48 from scikit-learn and training loss was slightly higher. That was a hard optimisation problem, not a code bug. The design matrix is badly conditioned (condition number of `X′X/n` ≈ **7,300**; e.g. `has_angel` and `log_angel` have **r ≈ 0.996**), so plain full-batch gradient descent creeps along a narrow valley while sklearn’s solver reaches the optimum directly. At 20,000 steps PyTorch had not arrived; at **100,000** steps all three share the same objective, weights within ~**3e-4**, test probabilities within ~**8e-6**, and identical metrics. Section 5.7 of `train.py` prints that diagnosis.
+
+**Reading the coefficients.** I do not interpret signs one feature at a time. Correlated groups split their effect unpredictably — e.g. `log_funding_total` ≈ +3.54 while `log_funding_per_round` ≈ −2.25 partly cancel because they overlap. Safer to speak in families: funding size/mix/stage, pace to first funding, sector dummies, and geography (including `is_hub`). Individually large coefficients inside a collinear pair are not stable stories. Artifacts (models, scaler, test predictions, feature table, results, coefficients, loss curves) are regenerated by every `main.py train` run and are git-ignored; the dashboard loads them rather than retraining.
 
 ## Limitations & next steps
 
