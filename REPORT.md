@@ -62,7 +62,16 @@ Dataset-level findings (raw structure, acquisition rate by founding year that ju
 
 The target is binary, so the model is **logistic regression**. Features are standardised with a `StandardScaler` **fitted on the training rows only**, then applied to validation and test — needed so gradient descent sees log-funding (~14) and 0/1 flags on a common scale.
 
-I train the **same** model three ways on that matrix: scikit-learn, a from-scratch PyTorch loop (raw tensors, autograd, manual update), and `torch.nn.Linear` + `BCEWithLogitsLoss` + `torch.optim.SGD`. Comparability is enforced, not assumed: the same 37 features and cohort split; the same L2 penalty mapped from sklearn’s `C` as `λ = 1/(C·n_train)` with the bias unpenalised; `float64` throughout; both PyTorch runs start at zero weights. The only hyperparameters touched are `C` (validation ROC-AUC) and the learning rate (short training-loss trial). Chosen values: **C = 10**, **lr = 1.0**. `C` barely matters here — validation ROC-AUC is **0.7610** at `C = 1` vs **0.7618** at `C = 10` — so regularisation strength is not an important lever on this problem.
+I train the **same** model three ways on that matrix: scikit-learn, a from-scratch PyTorch loop (raw tensors, autograd, manual update), and `torch.nn.Linear` + `BCEWithLogitsLoss` + `torch.optim.SGD`. Comparability is enforced, not assumed: the same 37 features and cohort split; the same L2 penalty mapped from sklearn’s `C` as `λ = 1/(C·n_train)` with the bias unpenalised (PyTorch does **not** get its own `C`); `float64` throughout; both PyTorch runs start at zero weights.
+
+**Tune sparingly.** Effort went into features (13 exploration sections, 37 engineered columns), not a grid search over the model. Only the two hyperparameters the brief allows get small grids:
+
+| Hyperparameter | Where | Criterion | Grid |
+| --- | --- | --- | --- |
+| Regularisation `C` | 5.2 | Best validation ROC-AUC (ranking metric for the boutique) | 0.001, 0.01, 0.1, 1, 10 |
+| Learning rate (both PyTorch versions) | 5.4 | Lowest training loss after a 500-step trial | 0.01, 0.1, 0.5, 1.0 |
+
+Chosen values: **C = 10**, **lr = 1.0**. `C` barely matters — validation ROC-AUC is **0.7610** at `C = 1` vs **0.7618** at `C = 10`. The learning rate is chosen on **training** loss on purpose: it only changes how fast gradient descent reaches the optimum, not which optimum; with 100,000 steps, every non-diverging rate would land in the same place. The step count itself was **not** tuned for score — section 5.7 raised it until PyTorch matched sklearn. One small inconsistency: the date-feature bootstrap (4.3) still uses sklearn’s default `C = 1`, while the final models use `C = 10`; given how flat validation AUC is in `C`, that does not change the drop decision.
 
 **Test results** (4,598 startups founded 2007–2008; top 5% = 230 pitches; cost = FP × €3,000 + FN × €37,500):
 
@@ -82,8 +91,17 @@ The model’s pitch list hits acquirers about **2.9×** as often as random. Rank
 
 ## Limitations & next steps
 
-*Real limitations you found, and concretely how you'd address each one with
-more time or data — not generic hedging.*
+1. **No acquisition date (1.2).** The label is “acquired by the 2014 snapshot,” not “within X years of founding,” which is why rates collapse from ~23% (1999 founders) to 0.6% (2013). **Fix:** join an acquisitions table with deal dates and redefine the target as acquired within a fixed window (e.g. five years), censoring companies that have not yet reached that age.
+
+2. **Exposure drift and age extrapolation (2.7, 5.8).** Acquisition rates fall across the split (16.0% → 13.6% → 9.7%), and `company_age` is learned on ages 9–14 then applied to 6–7 — mean predicted probability on test runs **low** (0.086 vs 0.097). **Fix:** score within age strata (or use time-varying / landmark models) so the age effect is never extrapolated outside the training support; with deal dates, one could also match exposure windows across cohorts.
+
+3. **Funding observed after the outcome (1.9).** Totals and round amounts may include money raised after an acquisition; the date-feature test found no clear leak from span alone, but the amounts themselves cannot be cut off at a decision date. **Fix:** rebuild features from round-level data truncated at a hypothetical pitch date (or at acquisition date for positives), so every input would have been known when the boutique decides whom to approach.
+
+4. **Correlated features and a linear model (5.7).** Condition number of `X′X/n` ≈ 7,300 (`has_angel` / `log_angel` r ≈ 0.996) makes individual coefficients unreadable and forced 100,000 GD steps; logistic regression also cannot learn interactions (e.g. hub × sector) without hand-built terms. **Fix:** drop or combine near-duplicate funding encodings, then try a small tree / gradient-boosted model (or explicitly add a few interaction features) and re-check calibration and precision@5%.
+
+5. **Thin validation and assumed business costs.** One extra hit moves validation precision@5% by ~0.011, and the date-feature gain sat inside noise (−0.005 to +0.017); the €150k fee and 25% win rate shape the euro column but not the ranking. **Fix:** bootstrap or nested validation for ranking metrics, and replace assumed costs with the boutique’s actual pitch cost and historical win rate (or treat cost as a dashboard sensitivity slider only).
+
+6. **Stale, messy export.** A 2014 Crunchbase snapshot misses today’s funding landscape; train also had ~100 “funded before founded” gaps (clipped to 0), 22% of raw rows lacked `founded_year` (dropped), and markets were hand-mapped into sectors. **Fix:** refresh from a current company/funding dump with cleaner dates, and replace the hand sector map with a supervised or embedding-based market encoding refit on training only.
 
 ## Generative AI use disclosure
 
