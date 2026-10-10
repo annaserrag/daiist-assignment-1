@@ -17,18 +17,28 @@ Section numbers in comments (e.g. "see 1.6") point back to the finding a step re
 """
 
 # %% Setup
+import json
+import time
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 pd.set_option("display.width", 120)
 
 ROOT = Path(__file__).resolve().parent
 DATA_PATH = ROOT / "data" / "investments_VC.csv"
+ARTIFACTS = ROOT / "artifacts"  # everything app.py loads; nothing there is retrained
+
+# Business costs from REPORT.md: a wasted pitch, and an acquirer we did not pitch
+# (EUR 150k fee x 25% assumed win rate).
+COST_FP = 3_000
+COST_FN = 37_500
 
 SNAPSHOT_YEAR = 2014           # last funding dates end on 2015-01-01 (see 1.5)
 COHORTS = range(2000, 2009)    # founded 2000-2008 (see 1.6)
@@ -451,6 +461,273 @@ else:
     print("   set without them.")
 print(f"final feature set: {len(FINAL_FEATURES)} features")
 
-# Next: train the same logistic regression three ways (scikit-learn, manual PyTorch
-# loop, nn.Module + torch.optim), compare against a naive baseline, and save
-# everything app.py needs.
+
+# =================================================================================
+# PART 5 — ONE MODEL, THREE IMPLEMENTATIONS
+# =================================================================================
+# The target is binary, so the model is logistic regression. It is trained three ways
+# on exactly the same standardised features and split: scikit-learn, a from-scratch
+# PyTorch loop (Session 5: raw tensors, autograd, a manual update), and the standard
+# torch.nn + torch.optim workflow. For the three to be comparable they must minimise
+# the same objective:
+#
+#   scikit-learn:  0.5 * ||w||^2 + C * sum(log-loss)
+#   divided by C*n: mean(log-loss) + ||w||^2 / (2*C*n)
+#
+# so both PyTorch versions minimise mean BCE + (lambda / 2) * ||w||^2 with
+# lambda = 1 / (C * n_train), penalising the weights but not the bias, as sklearn does.
+# Everything runs in float64 so that rounding does not blur the comparison.
+
+# %% 5.1 Standardise. Gradient descent needs features on a common scale to converge
+# (log funding is ~14, flags are 0/1); the scaler is fitted on the training rows only.
+scaler = StandardScaler().fit(features.loc[is_train, FINAL_FEATURES])
+X_train = scaler.transform(features.loc[is_train, FINAL_FEATURES])
+X_val = scaler.transform(features.loc[is_val, FINAL_FEATURES])
+X_test = scaler.transform(features.loc[is_test, FINAL_FEATURES])
+y_train, y_val, y_test = y[is_train], y[is_val], y[is_test]
+n_train, n_features = X_train.shape
+
+# %% 5.2 Tune the regularisation strength C, the only hyperparameter worth touching
+# for sklearn. Chosen by validation ROC-AUC, since the boutique ranks companies.
+print(f"\n{LINE}\n5.2 Regularisation strength C (validation)\n{LINE}")
+print(f"{'C':>8}{'val ROC-AUC':>13}{'val log-loss':>14}")
+best_C, best_val_auc = None, -np.inf
+for C in (0.001, 0.01, 0.1, 1.0, 10.0):
+    candidate = LogisticRegression(C=C, max_iter=10_000, tol=1e-10).fit(X_train, y_train)
+    val_proba = candidate.predict_proba(X_val)[:, 1]
+    val_auc = roc_auc_score(y_val, val_proba)
+    print(f"{C:>8}{val_auc:>13.4f}{log_loss(y_val, val_proba):>14.4f}")
+    if val_auc > best_val_auc:
+        best_C, best_val_auc = C, val_auc
+L2 = 1.0 / (best_C * n_train)
+print(f"-> C = {best_C}, which is lambda = 1 / (C * n_train) = {L2:.2e} in the PyTorch versions")
+
+# %% 5.3 Implementation 1: scikit-learn. A very tight tolerance so that it reaches the
+# optimum, not just "close enough", which matters when we compare the three below.
+started = time.perf_counter()
+sk_model = LogisticRegression(C=best_C, max_iter=10_000, tol=1e-10).fit(X_train, y_train)
+sk_seconds = time.perf_counter() - started
+sk_w = sk_model.coef_.ravel()
+sk_b = sk_model.intercept_[0]
+
+# %% 5.4 Learning rate for the two PyTorch versions, the only other hyperparameter
+# worth touching. Full-batch gradient descent: too small never arrives, too large
+# overshoots. Each candidate runs briefly from zero; the lowest training loss wins.
+X_train_t = torch.tensor(X_train, dtype=torch.float64)
+y_train_t = torch.tensor(y_train, dtype=torch.float64)
+EPOCHS = 100_000  # the problem is badly conditioned (see 5.7): 20,000 steps stop short
+
+print(f"\n{LINE}\n5.4 Learning rate for gradient descent (training loss after 500 steps)\n{LINE}")
+best_lr, best_lr_loss = None, np.inf
+for lr in (0.01, 0.1, 0.5, 1.0):
+    w_try = torch.zeros(n_features, dtype=torch.float64, requires_grad=True)
+    b_try = torch.zeros(1, dtype=torch.float64, requires_grad=True)
+    for _ in range(500):
+        p = torch.sigmoid(X_train_t @ w_try + b_try).clamp(1e-12, 1 - 1e-12)
+        loss = (-(y_train_t * torch.log(p) + (1 - y_train_t) * torch.log(1 - p)).mean()
+                + L2 / 2 * (w_try ** 2).sum())
+        loss.backward()
+        with torch.no_grad():
+            w_try -= lr * w_try.grad
+            b_try -= lr * b_try.grad
+        w_try.grad.zero_()
+        b_try.grad.zero_()
+    final = loss.item()
+    print(f"lr {lr:<6} loss {final:.6f}" + ("  (diverged)" if not np.isfinite(final) else ""))
+    if np.isfinite(final) and final < best_lr_loss:
+        best_lr, best_lr_loss = lr, final
+LR = best_lr
+print(f"-> lr = {LR}, then {EPOCHS:,} full-batch steps for both PyTorch versions")
+
+# %% 5.5 Implementation 2: PyTorch by hand, exactly the Session 5 pattern. Raw weight
+# and bias tensors, a hand-written forward pass and binary cross-entropy, .backward(),
+# a manual update inside torch.no_grad(), and .grad.zero_() after every step.
+torch.manual_seed(0)
+w = torch.zeros(n_features, dtype=torch.float64, requires_grad=True)
+b = torch.zeros(1, dtype=torch.float64, requires_grad=True)
+manual_loss_history = []
+
+started = time.perf_counter()
+for epoch in range(EPOCHS):
+    y_pred = torch.sigmoid(X_train_t @ w + b).clamp(1e-12, 1 - 1e-12)  # forward pass
+    bce = -(y_train_t * torch.log(y_pred) + (1 - y_train_t) * torch.log(1 - y_pred)).mean()
+    loss = bce + L2 / 2 * (w ** 2).sum()                                 # same objective as sklearn
+    loss.backward()                                                      # gradients via autograd
+    with torch.no_grad():                                                # don't track the update
+        w -= LR * w.grad
+        b -= LR * b.grad
+    w.grad.zero_()                                                       # or gradients accumulate
+    b.grad.zero_()
+    if epoch % 100 == 0 or epoch == EPOCHS - 1:
+        manual_loss_history.append((epoch, loss.item()))
+manual_seconds = time.perf_counter() - started
+manual_w = w.detach().numpy().copy()
+manual_b = b.item()
+
+# %% 5.6 Implementation 3: the standard workflow. nn.Linear holds the weights,
+# BCEWithLogitsLoss fuses the sigmoid into the loss (numerically safer than taking
+# log of a sigmoid), and torch.optim.SGD performs the update. weight_decay applies
+# lambda * w to the gradient, which is exactly the gradient of (lambda/2) * ||w||^2;
+# it is set on the weight only, so the bias stays unpenalised as in the other two.
+torch.manual_seed(0)
+std_model = torch.nn.Linear(n_features, 1, dtype=torch.float64)
+torch.nn.init.zeros_(std_model.weight)  # same zero start as the manual loop
+torch.nn.init.zeros_(std_model.bias)
+loss_fn = torch.nn.BCEWithLogitsLoss()
+optimizer = torch.optim.SGD(
+    [{"params": [std_model.weight], "weight_decay": L2},
+     {"params": [std_model.bias], "weight_decay": 0.0}],
+    lr=LR,
+)
+std_loss_history = []
+
+started = time.perf_counter()
+for epoch in range(EPOCHS):
+    optimizer.zero_grad()
+    logits = std_model(X_train_t).squeeze(1)
+    bce = loss_fn(logits, y_train_t)
+    bce.backward()
+    optimizer.step()
+    if epoch % 100 == 0 or epoch == EPOCHS - 1:
+        # report the same penalised objective as the manual loop, for comparable curves
+        with torch.no_grad():
+            penalised = bce.item() + L2 / 2 * (std_model.weight ** 2).sum().item()
+        std_loss_history.append((epoch, penalised))
+std_seconds = time.perf_counter() - started
+std_w = std_model.weight.detach().numpy().ravel().copy()
+std_b = std_model.bias.item()
+
+# %% 5.7 Do the three agree? Same objective, same data: they should land on the same
+# weights up to optimisation tolerance. The test probabilities are compared too.
+X_test_t = torch.tensor(X_test, dtype=torch.float64)
+test_proba = {
+    "scikit-learn": sk_model.predict_proba(X_test)[:, 1],
+    "PyTorch (manual)": torch.sigmoid(X_test_t @ torch.tensor(manual_w) + manual_b).numpy(),
+    "PyTorch (nn + optim)": torch.sigmoid(std_model(X_test_t).squeeze(1)).detach().numpy(),
+}
+sk_objective = (log_loss(y_train, sk_model.predict_proba(X_train)[:, 1])
+                + L2 / 2 * (sk_w ** 2).sum())
+
+print(f"\n{LINE}\n5.7 Do the three implementations agree?\n{LINE}")
+print(f"{'implementation':<22}{'train objective':>17}{'max |w - w_sklearn|':>21}"
+      f"{'|b - b_sklearn|':>17}{'seconds':>9}")
+for name, weights, bias, objective, seconds in (
+    ("scikit-learn", sk_w, sk_b, sk_objective, sk_seconds),
+    ("PyTorch (manual)", manual_w, manual_b, manual_loss_history[-1][1], manual_seconds),
+    ("PyTorch (nn + optim)", std_w, std_b, std_loss_history[-1][1], std_seconds),
+):
+    print(f"{name:<22}{objective:>17.8f}{np.abs(weights - sk_w).max():>21.2e}"
+          f"{abs(bias - sk_b):>17.2e}{seconds:>9.1f}")
+# Why gradient descent needs so many steps: correlated features make the loss surface
+# a long, narrow valley. The condition number of X'X/n measures how stretched it is.
+eigenvalues = np.linalg.eigvalsh(X_train.T @ X_train / n_train)
+feature_corr = np.corrcoef(X_train, rowvar=False)
+i, j = np.unravel_index(np.abs(np.triu(feature_corr, 1)).argmax(), feature_corr.shape)
+print(f"\ncondition number of X'X/n: {eigenvalues.max() / eigenvalues.min():,.0f}"
+      f" | most correlated pair: {FINAL_FEATURES[i]} / {FINAL_FEATURES[j]}"
+      f" (r = {feature_corr[i, j]:.3f})")
+print("-> gradient descent crawls along that valley, so the PyTorch versions need many")
+print(f"   more steps than sklearn's solver; after {EPOCHS:,} they reach the same optimum.")
+
+print("\nlargest difference in test probabilities vs scikit-learn:")
+for name in ("PyTorch (manual)", "PyTorch (nn + optim)"):
+    print(f"  {name:<22}{np.abs(test_proba[name] - test_proba['scikit-learn']).max():.2e}")
+print(f"  manual vs nn + optim  "
+      f"{np.abs(test_proba['PyTorch (manual)'] - test_proba['PyTorch (nn + optim)']).max():.2e}")
+
+print("\ncoefficients (standardised features: change in log-odds per 1 std):")
+coefficients = pd.DataFrame({"scikit-learn": sk_w, "PyTorch (manual)": manual_w,
+                             "PyTorch (nn + optim)": std_w}, index=FINAL_FEATURES)
+print(coefficients.reindex(coefficients["scikit-learn"].abs().sort_values(ascending=False).index)
+      .round(4).to_string())
+
+# %% 5.8 Evaluate on the untouched test set, against two naive baselines:
+#   base rate:       every company gets the training acquisition rate (a random ranking)
+#   funding only:    rank by total funding alone, the obvious banker heuristic
+# The operating rule from REPORT.md is "pitch the top 5% of the ranked list".
+test_scores = {
+    "baseline: base rate": np.full(len(y_test), y_train.mean()),
+    "baseline: funding only": features.loc[is_test, "log_funding_total"].to_numpy(),
+    **test_proba,
+}
+k_test = int(round(TOP_SHARE * len(y_test)))
+
+print(f"\n{LINE}\n5.8 Test set ({len(y_test):,} startups founded 2007-2008,"
+      f" {y_test.sum()} acquired; top 5% = {k_test} pitches)\n{LINE}")
+results = []
+for name, scores in test_scores.items():
+    if name == "baseline: base rate":
+        auc = 0.5
+        expected_hits = y_test.mean() * k_test  # a constant score is a random ranking
+        precision_k = y_test.mean()
+    else:
+        auc = roc_auc_score(y_test, scores)
+        pitched = np.argsort(-scores, kind="stable")[:k_test]
+        expected_hits = y_test[pitched].sum()
+        precision_k = y_test[pitched].mean()
+    false_positives = k_test - expected_hits
+    false_negatives = y_test.sum() - expected_hits
+    results.append({
+        "model": name,
+        "ROC-AUC": round(auc, 4),
+        "precision@5%": round(precision_k, 4),
+        "recall@5%": round(expected_hits / y_test.sum(), 4),
+        "acquirers pitched": round(expected_hits, 1),
+        "cost (EUR)": round(false_positives * COST_FP + false_negatives * COST_FN),
+    })
+results = pd.DataFrame(results).set_index("model")
+print(results.to_string())
+# Calibration on test: the framing expected probabilities to run high (the model is
+# trained where acquisitions are more common), but company_age also moves them, since
+# its coefficient is extrapolated down to the younger test cohorts (see 5.7).
+mean_predicted = test_proba["scikit-learn"].mean()
+print(f"\nmean predicted probability on test {mean_predicted:.3f} vs actual rate {y_test.mean():.3f}:"
+      f" the probabilities run {'high' if mean_predicted > y_test.mean() else 'low'}.")
+print("The top-5% rule depends only on the ranking, so it is unaffected either way.")
+
+
+# =================================================================================
+# PART 6 — SAVE EVERYTHING THE DASHBOARD NEEDS
+# =================================================================================
+# app.py only loads these files; it never trains anything.
+ARTIFACTS.mkdir(exist_ok=True)
+
+joblib.dump(sk_model, ARTIFACTS / "model_sklearn.joblib")
+torch.save({"w": torch.tensor(manual_w), "b": torch.tensor([manual_b])},
+           ARTIFACTS / "model_torch_manual.pt")
+torch.save(std_model.state_dict(), ARTIFACTS / "model_torch_nn.pt")
+joblib.dump(scaler, ARTIFACTS / "scaler.joblib")
+
+# Test predictions next to the truth, for prediction-vs-actual and the threshold slider.
+predictions = df.loc[is_test, ["name", "founded_year", "market", "country_code", "acquired"]].copy()
+predictions["sector"] = sector[is_test]
+for name, scores in test_scores.items():
+    predictions[name] = scores
+predictions.to_csv(ARTIFACTS / "test_predictions.csv", index=False)
+
+# Unscaled features with split and target, for the distribution views.
+feature_table = features[FINAL_FEATURES].copy()
+feature_table["split"] = np.select([is_train, is_val, is_test], ["train", "val", "test"], default="")
+feature_table["acquired"] = y
+feature_table.to_csv(ARTIFACTS / "features.csv", index=False)
+
+results.to_csv(ARTIFACTS / "results.csv")
+coefficients.to_csv(ARTIFACTS / "coefficients.csv")
+with open(ARTIFACTS / "metadata.json", "w") as f:
+    json.dump({
+        "features": FINAL_FEATURES,
+        "C": best_C,
+        "lambda": L2,
+        "learning_rate": LR,
+        "epochs": EPOCHS,
+        "top_share": TOP_SHARE,
+        "cost_fp": COST_FP,
+        "cost_fn": COST_FN,
+        "train_base_rate": float(y_train.mean()),
+        "test_base_rate": float(y_test.mean()),
+        "loss_history": {"PyTorch (manual)": manual_loss_history,
+                         "PyTorch (nn + optim)": std_loss_history},
+    }, f, indent=2)
+
+print(f"\n{LINE}\nSaved to {ARTIFACTS.relative_to(ROOT)}/: "
+      + ", ".join(sorted(p.name for p in ARTIFACTS.iterdir())) + f"\n{LINE}")
