@@ -46,6 +46,7 @@ TRAIN_YEARS = range(2000, 2006)
 VAL_YEARS = [2006]
 TEST_YEARS = [2007, 2008]
 TOP_SHARE = 0.05               # the boutique pitches the top 5% of the ranked list
+C_GRID = (0.001, 0.01, 0.1, 1.0, 10.0)  # regularisation strengths tried (4.2 and 5.2)
 
 FUNDING_TYPES = [
     "seed", "angel", "venture", "debt_financing", "convertible_note", "grant",
@@ -412,24 +413,29 @@ print(pd.DataFrame({
     "mean | not acquired": train_features[df.loc[is_train, "acquired"] == 0].mean(),
 }).round(2).to_string())
 
-# %% 4.2 Do the date features help? Same model with and without them, scored on
-# validation; the test set stays untouched until the final comparison.
-# Use C=10 here too (the value later selected in 5.2) so the probe matches the
-# final models; validation AUC is nearly flat in C, so this does not change 4.3.
+# %% 4.2 Do the date features help? The same logistic regression with and without
+# them, scored on validation; the test set stays untouched until the final comparison.
+# Each variant gets its own regularisation strength, tuned on validation over the same
+# grid and with the same solver settings as the final models (5.2), so the comparison
+# is between each feature set at its best, not at an arbitrary C.
 print(f"\n{LINE}\n4.2 Date features: with vs without (validation)\n{LINE}")
 k_val = int(round(TOP_SHARE * is_val.sum()))
 variant_scores = {}
-PROBE_C = 10.0
-print(f"{'variant':<22}{'features':>9}{'val ROC-AUC':>13}{'val P@5%':>10}")
+print(f"{'variant':<22}{'features':>9}{'best C':>8}{'val ROC-AUC':>13}{'val P@5%':>10}")
 for label, columns in (("without date features", FEATURES_NO_DATES),
                        ("with date features", FEATURES_ALL)):
     scaler = StandardScaler().fit(features.loc[is_train, columns])
-    probe = LogisticRegression(C=PROBE_C, max_iter=5000).fit(
-        scaler.transform(features.loc[is_train, columns]), y[is_train])
-    val_scores = probe.predict_proba(scaler.transform(features.loc[is_val, columns]))[:, 1]
-    variant_scores[label] = val_scores
-    top = np.argsort(-val_scores)[:k_val]
-    print(f"{label:<22}{len(columns):>9}{roc_auc_score(y[is_val], val_scores):>13.3f}"
+    X_probe_train = scaler.transform(features.loc[is_train, columns])
+    X_probe_val = scaler.transform(features.loc[is_val, columns])
+    variant_C, variant_auc = None, -np.inf
+    for C in C_GRID:
+        probe = LogisticRegression(C=C, max_iter=10_000, tol=1e-10).fit(X_probe_train, y[is_train])
+        val_scores = probe.predict_proba(X_probe_val)[:, 1]
+        if roc_auc_score(y[is_val], val_scores) > variant_auc:
+            variant_C, variant_auc = C, roc_auc_score(y[is_val], val_scores)
+            variant_scores[label] = val_scores
+    top = np.argsort(-variant_scores[label])[:k_val]
+    print(f"{label:<22}{len(columns):>9}{variant_C:>8}{variant_auc:>13.3f}"
           f"{y[is_val][top].mean():>10.3f}")
 print(f"\nvalidation base rate {y[is_val].mean():.1%}; the top 5% is {k_val} companies,"
       f" so one extra hit moves P@5% by {1 / k_val:.3f}")
@@ -497,7 +503,7 @@ n_train, n_features = X_train.shape
 print(f"\n{LINE}\n5.2 Regularisation strength C (validation)\n{LINE}")
 print(f"{'C':>8}{'val ROC-AUC':>13}{'val log-loss':>14}")
 best_C, best_val_auc = None, -np.inf
-for C in (0.001, 0.01, 0.1, 1.0, 10.0):
+for C in C_GRID:
     candidate = LogisticRegression(C=C, max_iter=10_000, tol=1e-10).fit(X_train, y_train)
     val_proba = candidate.predict_proba(X_val)[:, 1]
     val_auc = roc_auc_score(y_val, val_proba)
