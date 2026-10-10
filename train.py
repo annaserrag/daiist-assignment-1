@@ -284,8 +284,10 @@ for name, mask in (("train", is_train), ("val", is_val), ("test", is_test)):
     print(f"{name:<7}{f'{part.founded_year.min()}-{part.founded_year.max()}':<11}"
           f"{len(part):>7,}{part.acquired.sum():>10,}{part.acquired.mean():>8.1%}"
           f"{part.company_age.min():>6}-{part.company_age.max()}")
-print("the rate drifts down with less exposure: probabilities will run high on test,")
-print("while the top-k ranking rule is unaffected.")
+print("the rate drifts down with less exposure. Base-rate drift alone would push")
+print("predicted probabilities high on test, but company_age (learned on older")
+print("cohorts) can pull them the other way — check calibration after fitting.")
+print("Either way the top-k ranking rule is unaffected by the level shift.")
 
 
 # =================================================================================
@@ -677,12 +679,14 @@ for name, scores in test_scores.items():
     })
 results = pd.DataFrame(results).set_index("model")
 print(results.to_string())
-# Calibration on test: the framing expected probabilities to run high (the model is
-# trained where acquisitions are more common), but company_age also moves them, since
-# its coefficient is extrapolated down to the younger test cohorts (see 5.7).
+# Calibration on test: base-rate drift alone would push means high (train rate >
+# test rate), but a positive company_age coefficient extrapolated to younger test
+# cohorts pulls the other way — so report the observed direction, not the guess.
 mean_predicted = test_proba["scikit-learn"].mean()
 print(f"\nmean predicted probability on test {mean_predicted:.3f} vs actual rate {y_test.mean():.3f}:"
-      f" the probabilities run {'high' if mean_predicted > y_test.mean() else 'low'}.")
+      f" the probabilities run {'high' if mean_predicted > y_test.mean() else 'low'}"
+      f" (company_age coefficient {coefficients.loc['company_age', 'scikit-learn']:+.3f}"
+      f" on standardised age; see 5.7).")
 print("The top-5% rule depends only on the ranking, so it is unaffected either way.")
 
 
