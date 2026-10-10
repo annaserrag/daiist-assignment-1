@@ -414,14 +414,17 @@ print(pd.DataFrame({
 
 # %% 4.2 Do the date features help? Same model with and without them, scored on
 # validation; the test set stays untouched until the final comparison.
+# Use C=10 here too (the value later selected in 5.2) so the probe matches the
+# final models; validation AUC is nearly flat in C, so this does not change 4.3.
 print(f"\n{LINE}\n4.2 Date features: with vs without (validation)\n{LINE}")
 k_val = int(round(TOP_SHARE * is_val.sum()))
 variant_scores = {}
+PROBE_C = 10.0
 print(f"{'variant':<22}{'features':>9}{'val ROC-AUC':>13}{'val P@5%':>10}")
 for label, columns in (("without date features", FEATURES_NO_DATES),
                        ("with date features", FEATURES_ALL)):
     scaler = StandardScaler().fit(features.loc[is_train, columns])
-    probe = LogisticRegression(max_iter=5000).fit(
+    probe = LogisticRegression(C=PROBE_C, max_iter=5000).fit(
         scaler.transform(features.loc[is_train, columns]), y[is_train])
     val_scores = probe.predict_proba(scaler.transform(features.loc[is_val, columns]))[:, 1]
     variant_scores[label] = val_scores
