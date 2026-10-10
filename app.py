@@ -24,6 +24,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import torch
 
 ROOT = Path(__file__).resolve().parent
@@ -244,13 +245,29 @@ def distribution(variable, split):
 
 
 def loss_curves():
-    fig = go.Figure()
+    """Left: the objective itself. Right: how far it still is from sklearn's optimum.
+
+    Step 0 (all weights zero, loss = ln 2 = 0.693) is drawn at x = 1, because a log axis
+    cannot show 0. Almost all of the drop happens in the first 100 steps; the slow tail
+    after that, caused by the badly conditioned features (5.7), only shows on a log scale.
+    """
+    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.14, subplot_titles=(
+        "Objective (mean BCE + L2)", "Gap to sklearn's optimum (log scale)"))
+    optimum = meta["sklearn_objective"]
     for name in ("PyTorch (manual)", "PyTorch (nn + optim)"):
         epochs, losses = zip(*meta["loss_history"][name])
-        fig.add_trace(go.Scatter(x=epochs, y=losses, name=name, line=LINE_STYLE[name]))
-    fig.update_layout(title="Training objective (mean BCE + L2), full-batch gradient descent",
-                      xaxis_title="step", yaxis_title="objective", xaxis_type="log",
-                      height=400)
+        steps = np.array(epochs) + 1
+        gap = np.maximum(np.array(losses) - optimum, 1e-12)
+        fig.add_trace(go.Scatter(x=steps, y=losses, name=name, line=LINE_STYLE[name],
+                                 legendgroup=name), row=1, col=1)
+        fig.add_trace(go.Scatter(x=steps, y=gap, name=name, line=LINE_STYLE[name],
+                                 legendgroup=name, showlegend=False), row=1, col=2)
+    fig.update_xaxes(type="log", title_text="step + 1")
+    fig.update_yaxes(title_text="objective", row=1, col=1)
+    fig.update_yaxes(type="log", title_text="objective - sklearn optimum", row=1, col=2)
+    fig.update_layout(height=460, title=f"Full-batch gradient descent, {meta['epochs']:,} steps "
+                                        f"(sklearn optimum {optimum:.8f})",
+                      legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"))
     return fig
 
 
