@@ -16,34 +16,33 @@ matters, and be honest in REPORT.md about what didn't work and why.
 ## The task
 
 1. **Pick a dataset.** Tabular, with a clear regression or classification
-   target (or one you can build non-trivially from the data), interesting
+  target (or one you can build non-trivially from the data), interesting
    enough that feature engineering isn't trivial. Large enough to train on,
    small enough to commit to this repo and retrain from scratch: a rough
    guide is under ~20k rows / ~20MB, not a strict cutoff.
 2. **Frame the business problem** *before* writing any pipeline code: what
-   hypothetical (or real) decision does this model support? Write it in
+  hypothetical (or real) decision does this model support? Write it in
    REPORT.md, and make sure it drives later decisions: does target
    definition need care, would a random split leak the future into
    training, which metric should set the decision threshold?
 3. **Preprocess, engineer features, and split** with numpy/pandas/sklearn,
-   consistent with what you decided in step 2.
+  consistent with what you decided in step 2.
 4. **Train the same model three ways** on the same split:
-   - scikit-learn linear or logistic regression
-   - manual PyTorch loop like we saw in the PyTorch introduction notebook
-   - standard PyTorch workflow
-
+  - scikit-learn linear or logistic regression
+  - manual PyTorch loop like we saw in the PyTorch introduction notebook
+  - standard PyTorch workflow
    Compare all three against each other and against a naive baseline. Save
    each trained model to disk: training is the only stage that trains
    anything, and the Gradio app must load these saved models, never
    retrain them.
 5. **Tune sparingly.** The only hyperparameters worth touching are
-   regularization strength and, for the two PyTorch versions, the learning
+  regularization strength and, for the two PyTorch versions, the learning
    rate. Put your effort into features, not a grid search.
 6. **Write REPORT.md** (skeleton already in this repo): dataset, business
-   framing, your process, a three-method comparison table, and honest
+  framing, your process, a three-method comparison table, and honest
    limitations.
 7. **Build the Gradio dashboard** from your trained models. It should
-   never retrain anything at startup. At minimum, let you compare the
+  never retrain anything at startup. At minimum, let you compare the
    three models with a prediction vs. actual plot, see feature/target
    distributions, and, for classification, move a threshold slider to
    watch the confusion matrix and a business-cost number change.
@@ -60,11 +59,12 @@ Same environment workflow as Session 2's environment check.
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS
 ```
+
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
 ```
 
-Fork this repo (https://github.com/ami232/daiist-assignment-1), then clone
+Fork this repo ([https://github.com/ami232/daiist-assignment-1](https://github.com/ami232/daiist-assignment-1)), then clone
 **your fork**:
 
 ```bash
@@ -113,10 +113,10 @@ its startup window.
 
 1. Push your finished branch to your fork.
 2. Open a pull request from your fork to the original repo:
-   https://github.com/ami232/daiist-assignment-1
+  [https://github.com/ami232/daiist-assignment-1](https://github.com/ami232/daiist-assignment-1)
 3. Submit the PR link on Blackboard.
 4. Also upload a zipped copy of your repo to Blackboard, as a backup in
-   case your fork or the PR becomes unavailable.
+  case your fork or the PR becomes unavailable.
 
 ## Grading
 
@@ -124,13 +124,15 @@ its startup window.
 end-to-end via `main.py` with no manual intervention. A submission that
 fails this can't pass the assignment, regardless of everything else below.
 
-| Component | Weight | What it checks |
-|---|---|---|
-| Dataset & business framing | 20% | Is the framing sensible, and does it actually drive concrete pipeline decisions (split strategy, threshold metric, etc.) rather than just narrating them? |
-| Feature engineering & preprocessing | 30% | Quality and justification of what you built, not just its presence. This is the largest component, since most of your effort should go here. |
-| Three-method comparison | 30% | Do scikit-learn / manual PyTorch / standard PyTorch agree on the same split? If not, is that investigated and explained honestly rather than hidden? |
-| Gradio dashboard | 20% | All required views present, working off your pipeline's real artifacts, nothing retrained at startup. |
-| **× Written Comprehension Check** | **0–100%** | Multiplies the subtotal |
+
+| Component                           | Weight     | What it checks                                                                                                                                            |
+| ----------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dataset & business framing          | 20%        | Is the framing sensible, and does it actually drive concrete pipeline decisions (split strategy, threshold metric, etc.) rather than just narrating them? |
+| Feature engineering & preprocessing | 30%        | Quality and justification of what you built, not just its presence. This is the largest component, since most of your effort should go here.              |
+| Three-method comparison             | 30%        | Do scikit-learn / manual PyTorch / standard PyTorch agree on the same split? If not, is that investigated and explained honestly rather than hidden?      |
+| Gradio dashboard                    | 20%        | All required views present, working off your pipeline's real artifacts, nothing retrained at startup.                                                     |
+| **× Written Comprehension Check**   | **0–100%** | Multiplies the subtotal                                                                                                                                   |
+
 
 REPORT.md isn't graded as its own row: it's where the other four
 components' content lives, so its quality is already captured by them. The
@@ -142,3 +144,24 @@ since the check verifies the understanding this brief keeps asking for.
 Coefficients above are a starting proposal sized to relative workload
 (feature engineering and the three-method comparison carry the most work),
 not settled policy. Expect them to be confirmed before the deadline.
+
+## Generative AI use
+
+Per the syllabus AI Policy: disclosed AI use is fine and must be stated in
+REPORT.md's disclosure section. Within that policy, here's how it applies
+to this assignment specifically:
+
+- **Fine to use AI for**: boilerplate and common operations, like loading
+a dataset, saving a trained model, and especially plotting and
+presenting results in the Gradio dashboard.
+- **Use your own judgement for**: the decisions that are the point of this
+assignment, like which features to design, how to frame the business
+problem, and the implications of your design choices. AI can write the
+code for a decision, but the decision itself has to be yours.
+- **REPORT.md**: the ideas and findings in it must be your own. AI may
+help with formatting, not with generating the analysis or conclusions.
+
+None of this changes what's expected of you: you have to be able to
+explain every decision in your submission as if you made it yourself,
+because you did. Using a tool to help write it doesn't transfer the
+understanding requirement to the tool.
