@@ -569,7 +569,7 @@ for epoch in range(EPOCHS):
         b -= LR * b.grad
     w.grad.zero_()                                                       # or gradients accumulate
     b.grad.zero_()
-    if epoch % 100 == 0 or epoch == EPOCHS - 1:
+    if epoch < 100 or epoch % 100 == 0 or epoch == EPOCHS - 1:  # dense early, where the drop is
         manual_loss_history.append((epoch, loss.item()))
 manual_seconds = time.perf_counter() - started
 manual_w = w.detach().numpy().copy()
@@ -599,7 +599,7 @@ for epoch in range(EPOCHS):
     bce = loss_fn(logits, y_train_t)
     bce.backward()
     optimizer.step()
-    if epoch % 100 == 0 or epoch == EPOCHS - 1:
+    if epoch < 100 or epoch % 100 == 0 or epoch == EPOCHS - 1:  # dense early, where the drop is
         # report the same penalised objective as the manual loop, for comparable curves
         with torch.no_grad():
             penalised = bce.item() + L2 / 2 * (std_model.weight ** 2).sum().item()
@@ -738,6 +738,7 @@ with open(ARTIFACTS / "metadata.json", "w") as f:
         "cost_fn": COST_FN,
         "train_base_rate": float(y_train.mean()),
         "test_base_rate": float(y_test.mean()),
+        "sklearn_objective": float(sk_objective),  # the optimum the PyTorch curves approach
         "loss_history": {"PyTorch (manual)": manual_loss_history,
                          "PyTorch (nn + optim)": std_loss_history},
     }, f, indent=2)
