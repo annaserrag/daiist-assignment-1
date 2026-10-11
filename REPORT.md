@@ -7,11 +7,11 @@
 
 ## Dataset
 
-My dataset is [StartUp Investments (Crunchbase)](https://www.kaggle.com/datasets/arindam235/startup-investments-crunchbase/data) from Kaggle. It is a 2014 snapshot and an export of Crunchbase data on venture-backed companies. The file has 54,294 lines and 39 columns, of which 4,856 are completely empty, so there are **49,438 startups**; each non-empty row is one company. Restricting to founding years 2000–2008 (the modeling cohort below) leaves **12,214** companies.
+The dataset I have used is the [StartUp Investments (Crunchbase)](https://www.kaggle.com/datasets/arindam235/startup-investments-crunchbase/data) dataset from Kaggle; it is a snapshot from 2014 and consists of an export of Crunchbase's data regarding venture-backed companies. The file contains 54,294 lines and 39 columns, 4,856 of which are entirely empty, meaning that there are 49,438 startups, each corresponding to one non-empty row. When you limit the dataset to the founding years between 2000 and 2008 (which is the cohort in question in the modeling section below), you are left with 12,214 companies.
 
-Its columns cover identity and location (`name`, `market`, `country_code`, …), founding and funding dates (`founded_year`, `first_funding_at`, `last_funding_at`), amounts by round type (`seed`, `venture`, `round_A`–`round_H`, `funding_total_usd`, …), and a categorical `status` (`acquired` / `operating` / `closed`).
+The columns include information on identity and location (such as name, market, country_code, and so on), the dates of founding and funding (founded_year, first_funding_at, last_funding_at), the amounts according to the type of round (seed, venture, round_A through round_H, funding_total_usd, etc.), and a categorical status (acquired, operating, or closed).
 
-I picked it because the business question — who is likely to be acquired — maps cleanly onto `status`, the funding columns leave room for non-trivial feature engineering, and founding/funding dates make a time-aware split the natural choice. The full **~12.5 MB** export is committed in the repo (under the ~20 MB guide); the row count is above the rough ~20k guide, so the model uses the **12,214** companies in the 2000–2008 window rather than every startup in the file.
+I chose it since the business question—namely, who is likely to be acquired—corresponds directly with status, the funding columns provide scope for non-trivial feature engineering, and the founding and funding dates make it natural to use a time-aware split. The complete ~12.5 MB export is available in the repository (under the ~20 MB guide); as the number of rows exceeds the approximate ~20k figure mentioned, the model decides to use the 12,214 companies in the 2000–2008 period rather than all the startups in the file.
 
 ## Business / real-life framing
 
